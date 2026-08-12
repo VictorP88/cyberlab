@@ -1,0 +1,113 @@
+# CyberLab MVP - stack de desenvolvimento
+# Rodar dentro do WSL2 (Ubuntu) com Docker Engine nativo (NÃO Docker Desktop),
+# para evitar qualquer licenciamento comercial.
+#
+# Setup rápido:
+#   1. No WSL2 Ubuntu: curl -fsSL https://get.docker.com | sh
+#   2. sudo usermod -aG docker $USER  (e reabrir sessão)
+#   3. docker compose up -d --build
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: cyberlab-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cyberlab
+      POSTGRES_PASSWORD: cyberlab_dev_password
+      POSTGRES_DB: cyberlab
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - cyberlab_core
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: cyberlab-valkey
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - cyberlab_core
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cyberlab-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - cyberlab_core
+    # Após subir, rodar uma vez: docker exec -it cyberlab-ollama ollama pull mistral
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cyberlab-backend
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - valkey
+      - ollama
+    environment:
+      DATABASE_URL: postgresql+asyncpg://cyberlab:cyberlab_dev_password@postgres:5432/cyberlab
+      VALKEY_URL: redis://valkey:6379/0
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: mistral
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app
+      # Monta o socket do Docker do HOST para o backend poder orquestrar
+      # containers de desafio (as "máquinas" dos cenários).
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - cyberlab_core
+      - cyberlab_challenges
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cyberlab-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - cyberlab_core
+
+  apt-cache:
+    build:
+      context: ./apt-cache
+      dockerfile: Dockerfile
+    container_name: cyberlab-apt-cache
+    restart: unless-stopped
+    networks:
+      - cyberlab_core
+    volumes:
+      - apt_cache_data:/var/cache/apt-cacher-ng
+
+networks:
+  cyberlab_core:
+    driver: bridge
+  cyberlab_challenges:
+    # Rede isolada onde as máquinas de desafio (spawnadas dinamicamente)
+    # vão viver, segregadas da rede de infraestrutura.
+    driver: bridge
+    internal: false  # trocar para true em produção, se não precisar de saída externa
+
+volumes:
+  pg_data:
+  ollama_data:
+  apt_cache_data:

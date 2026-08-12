@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# Ambiente / segredos
+.env
+.env.local
+*.pem
+*.key
+
+# Docker
+*.log
+
+# Editor / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Dados locais (volumes montados, se algum ficar solto na árvore)
+*.sqlite3
