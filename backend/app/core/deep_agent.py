@@ -34,6 +34,7 @@ logger = logging.getLogger("cyberlab.deep_agent")
 
 SUPPORTED_VULNERABILITY_TYPES = ["sqli", "command_injection"]
 SQLI_VARIANTS = ["login_bypass", "search_exfiltration"]
+COMMAND_INJECTION_VARIANTS = ["network_tool", "log_viewer"]
 
 LESSONS_LEARNED = """
 Lições já aprendidas nesse ambiente (pra manter consistência de estilo):
@@ -44,9 +45,12 @@ Lições já aprendidas nesse ambiente (pra manter consistência de estilo):
 - Variante "search_exfiltration" de sqli: busca de produtos vulnerável
   a SQLi via parâmetro GET na URL, uma fase só, sem privesc. Mais
   direto, uma flag.
-- Cenários de "command_injection" usam uma ferramenta de diagnóstico de
-  rede (ping) em PHP, exploração via injetar comandos extras no campo
-  de host.
+- Cenários de "command_injection" variante "network_tool": ferramenta de
+  diagnóstico de rede (ping) em PHP, injeção via campo de formulário
+  (POST), privesc via sudoers mal configurado.
+- Cenários de "command_injection" variante "log_viewer": visualizador de
+  logs em PHP, injeção via parâmetro na URL (GET), privesc via bit SUID
+  mal configurado — mecanismo diferente do sudoers.
 - As dicas devem guiar o raciocínio sem entregar a flag literal — nunca
   inclua o valor exato da flag ou senha nas dicas.
 """
@@ -91,9 +95,16 @@ async def _classify_scenario(description: str) -> tuple[str, str]:
         "Use 'search_exfiltration' se o pedido mencionar busca, "
         "pesquisa, filtro, catálogo, ou pedir algo simples/iniciante/"
         "rápido. Caso contrário, ou se não tiver certeza, use "
-        "'login_bypass' (é o padrão mais completo).\n"
-        "Se vulnerability_type for 'command_injection', sempre use "
-        "variant: 'network_tool'."
+        "'login_bypass' (é o padrão mais completo).\n\n"
+        "Se vulnerability_type for 'command_injection', escolha variant "
+        "entre:\n"
+        "- 'network_tool': ferramenta de diagnóstico de rede (ping), "
+        "injeção via formulário (POST)\n"
+        "- 'log_viewer': visualizador de logs, injeção via parâmetro na "
+        "URL (GET)\n"
+        "Use 'log_viewer' se o pedido mencionar log, arquivo, URL, "
+        "parâmetro GET, ou visualização/consulta. Caso contrário, use "
+        "'network_tool' (é o padrão)."
     )
     llm = _get_llm()
     response = await llm.ainvoke([("system", system), ("human", description)])
@@ -108,7 +119,7 @@ async def _classify_scenario(description: str) -> tuple[str, str]:
         vuln_type = "sqli"
     if vuln_type == "sqli" and variant not in SQLI_VARIANTS:
         variant = "login_bypass"
-    if vuln_type == "command_injection":
+    if vuln_type == "command_injection" and variant not in COMMAND_INJECTION_VARIANTS:
         variant = "network_tool"
 
     return vuln_type, variant

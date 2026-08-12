@@ -32,6 +32,10 @@ const PROMPT_SUGGESTIONS: { category: string; variants: { label: string; text: s
         label: "Diagnóstico de rede",
         text: "ferramenta de diagnóstico de rede vulnerável a injeção de comandos",
       },
+      {
+        label: "Visualizador de logs (via URL)",
+        text: "visualizador de logs vulnerável a injeção de comandos via parâmetro na URL",
+      },
     ],
   },
 ];

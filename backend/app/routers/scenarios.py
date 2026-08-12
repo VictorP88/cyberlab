@@ -24,6 +24,9 @@ from app.core.webapp_template import (
     build_command_injection_post_app_commands,
     build_command_injection_pre_app_commands,
     build_landing_php,
+    build_log_viewer_php,
+    build_log_viewer_post_app_commands,
+    build_log_viewer_pre_app_commands,
     build_login_php,
     build_robots_txt,
     build_search_landing_php,
@@ -146,7 +149,27 @@ async def generate_and_spawn(
     flag_hash = hashlib.sha256(flag_value.encode()).hexdigest()
     root_flag_hash: str | None = None
 
-    if vulnerability_type == "command_injection":
+    if vulnerability_type == "command_injection" and variant == "log_viewer":
+        flag_location = "/opt/flag.txt"
+        root_flag_value = f"CYBERLAB{{{secrets.token_hex(8)}}}"
+        root_flag_hash = hashlib.sha256(root_flag_value.encode()).hexdigest()
+
+        pre_app_commands = build_log_viewer_pre_app_commands()
+        app_files = {"/var/www/html/index.php": build_log_viewer_php()}
+        post_app_commands = build_log_viewer_post_app_commands(
+            flag_value, flag_location, root_flag_value
+        )
+        extra_hint = (
+            "Fase 1: o campo de arquivo vai direto pro comando de "
+            "sistema via parâmetro da URL (GET), sem sanitização — "
+            "encadeia outro comando junto do nome do log (ex: usando ; "
+            "ou &&) pra ler a primeira flag. Fase 2: procura por "
+            "binários com bit SUID mal configurado (ex: injeta `find / "
+            "-perm -4000 2>/dev/null`), e usa o que encontrar pra ler a "
+            "segunda flag numa única injeção."
+        )
+
+    elif vulnerability_type == "command_injection":
         flag_location = "/opt/flag.txt"
         root_flag_value = f"CYBERLAB{{{secrets.token_hex(8)}}}"
         root_flag_hash = hashlib.sha256(root_flag_value.encode()).hexdigest()

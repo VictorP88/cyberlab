@@ -417,3 +417,86 @@ def build_command_injection_post_app_commands(
         f"echo '{root_flag_value}' > /root/root_flag.txt",
         "chmod 600 /root/root_flag.txt",
     ]
+
+
+# ============================================================
+# Command Injection — variante 2: visualizador de logs
+# Injeção via parâmetro GET (URL), não formulário POST. Fase 2 usa um
+# mecanismo DIFERENTE da variante 1: bit SUID mal configurado num
+# binário (não sudoers), descoberto via enumeração de SUID
+# (find / -perm -4000) em vez de sudo -l — técnica de reconhecimento
+# genuinamente distinta.
+# ============================================================
+
+def build_log_viewer_php() -> str:
+    """
+    Visualizador de logs — pede um nome de arquivo e mostra o conteúdo.
+    Vulnerável de propósito: o nome do arquivo vai direto pro comando de
+    sistema via parâmetro GET (URL), sem sanitização nenhuma.
+    """
+    return """<?php
+$output = '';
+$logfile = $_GET['logfile'] ?? '';
+if ($logfile !== '') {
+    // Vulnerável de propósito: nome de arquivo vai direto pro comando
+    // de sistema, sem sanitização (Command Injection via parâmetro GET).
+    $output = shell_exec('cat /var/log/app/' . $logfile . ' 2>&1');
+}
+?>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>CyberLab - Visualizador de Logs</title>
+<style>
+body{font-family:sans-serif;background:#111;color:#eee;padding:2rem}
+.box{max-width:600px;margin:0 auto;background:#1c1c1c;padding:2rem;border-radius:8px}
+input{width:100%;padding:8px;margin:6px 0;border-radius:4px;border:1px solid #444;background:#222;color:#eee;box-sizing:border-box}
+button{padding:8px 16px;background:#4f7cff;color:#fff;border:none;border-radius:4px;cursor:pointer}
+pre{background:#000;padding:1rem;overflow-x:auto;white-space:pre-wrap;border-radius:4px;margin-top:1rem}
+</style>
+</head>
+<body>
+<div class="box">
+<h2>Visualizador de Logs</h2>
+<p>Consulta arquivos de log da aplicação.</p>
+<form method="GET">
+<input type="text" name="logfile" placeholder="ex: access.log" value="<?= htmlspecialchars($logfile) ?>">
+<button type="submit">Ver log</button>
+</form>
+<?php if ($output !== ''): ?>
+<pre><?= htmlspecialchars($output) ?></pre>
+<?php endif; ?>
+</div>
+</body>
+</html>
+"""
+
+
+def build_log_viewer_pre_app_commands() -> list[str]:
+    return [
+        "apt-get update",
+        "apt-get install -y -o Acquire::Retries=3 apache2 libapache2-mod-php",
+    ]
+
+
+def build_log_viewer_post_app_commands(
+    flag_value: str, flag_location: str, root_flag_value: str
+) -> list[str]:
+    """
+    Fase 2 diferente de propósito: SUID no lugar de sudoers. Sem pacote
+    'sudo' nem sudoers.d nenhum — o vetor aqui é o bit SUID direto no
+    binário /usr/bin/find, um erro de configuração clássico e real,
+    explorável via `find ... -exec` (GTFOBins, entrada SUID).
+    """
+    return [
+        "mkdir -p /var/log/app",
+        "echo '192.168.1.10 - - [10/Aug/2026] GET /index.php 200' > /var/log/app/access.log",
+        "rm -f /var/www/html/index.html",
+        f"mkdir -p $(dirname {flag_location}) && echo '{flag_value}' > {flag_location}",
+        f"chmod 644 {flag_location}",
+        "service apache2 start",
+        "chmod u+s /usr/bin/find",
+        f"echo '{root_flag_value}' > /root/root_flag.txt",
+        "chmod 600 /root/root_flag.txt",
+    ]
