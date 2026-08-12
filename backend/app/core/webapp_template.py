@@ -1,7 +1,16 @@
 """
 Templates determinísticos das aplicações vulneráveis — front (HTML/CSS),
 back (PHP) e infraestrutura sempre entregues de forma fixa por tipo de
-vulnerabilidade, sem depender da LLM pra escrever código de aplicação.
+vulnerabilidade + variante + dificuldade, sem depender da LLM pra
+escrever código de aplicação.
+
+A dificuldade agora é um eixo TÉCNICO real, não só um rótulo narrativo:
+  - easy:   erro/saída sempre visível — guia direta a exploração
+  - medium: sem erro/saída, mas ainda com sinal (dado extraído ou tempo
+            de resposta) — exige mais cuidado, sem "cola"
+  - hard:   totalmente cego — só oráculo booleano (SQLi) ou execução
+            assíncrona forçando exfiltração fora de banda (Command
+            Injection)
 """
 from __future__ import annotations
 
@@ -13,8 +22,7 @@ from __future__ import annotations
 
 def build_landing_php(company_name: str = "TechCorp Solutions") -> str:
     """Página inicial de uma 'empresa' fake — o login fica escondido
-    atrás de um link, não é a primeira coisa que aparece. Reconhecimento
-    de verdade em vez de já cair direto na vulnerabilidade."""
+    atrás de um link, não é a primeira coisa que aparece."""
     return f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -65,34 +73,61 @@ a{{color:#1c2b3a}}</style>
 
 
 def build_robots_txt() -> str:
-    """Dica de reconhecimento: ferramentas como gobuster/dirb encontram
-    isso rápido, e ele aponta pra rota do login sem revelar a
-    vulnerabilidade em si."""
     return "User-agent: *\nDisallow: /login.php\n"
 
 
-def build_login_php(db_password: str) -> str:
+def build_login_php(db_password: str, difficulty: str = "easy") -> str:
     """
-    A senha do banco vai direto no código PHP gerado, em vez de depender
-    de getenv(). db_password vem de secrets.token_hex(), nunca tem
-    aspas — mas escapamos mesmo assim por robustez.
+    A senha do banco vai direto no código PHP gerado (nunca via
+    getenv()). O comportamento da resposta muda por dificuldade:
+      - easy:   mostra erro de sintaxe SQL quando houver
+      - medium: some com o erro, mas UNION ainda revela dado direto
+      - hard:   oráculo booleano puro ("permitido"/"negado"), NUNCA
+                revela dado — extração exige blind SQLi de verdade
+                (sqlmap --technique=B é o caminho realista)
     """
     escaped = db_password.replace("\\", "\\\\").replace("'", "\\'")
+
+    if difficulty == "hard":
+        response_logic = """    if ($result && $result->num_rows > 0) {
+        $message = "Acesso permitido.";
+    } else {
+        $message = "Acesso negado.";
+    }
+"""
+    elif difficulty == "medium":
+        response_logic = """    if ($result && $result->num_rows > 0) {
+        $row = $result->fetch_assoc();
+        $message = "Login bem-sucedido! Bem-vindo, " . htmlspecialchars($row['username']) . ".";
+        if ($row['username'] === 'admin') {
+            $message .= "<br>Flag: " . htmlspecialchars($row['flag'] ?? '');
+        }
+    } else {
+        $message = "Usuário ou senha inválidos.";
+    }
+"""
+    else:
+        response_logic = """    if ($result && $result->num_rows > 0) {
+        $row = $result->fetch_assoc();
+        $message = "Login bem-sucedido! Bem-vindo, " . htmlspecialchars($row['username']) . ".";
+        if ($row['username'] === 'admin') {
+            $message .= "<br>Flag: " . htmlspecialchars($row['flag'] ?? '');
+        }
+    } else {
+        $message = "Usuário ou senha inválidos.";
+        if ($conn->error) {
+            $message .= "<br><small>Erro SQL: " . htmlspecialchars($conn->error) . "</small>";
+        }
+    }
+"""
+
     return f"""<?php
 // Desde o PHP 8.1, mysqli lança exceção em QUALQUER erro de query por
-// padrão (não só erro de conexão) — inclusive erros de sintaxe SQL, que
-// são esperados quando alguém está literalmente testando payloads de
-// SQL Injection. Sem isso, testar um payload que quebra a sintaxe
-// derruba a página inteira (500) em vez de mostrar o erro SQL de forma
-// tratada, que é o comportamento clássico e o que faz sentido aqui.
+// padrão — inclusive erros de sintaxe SQL, esperados ao testar SQLi.
 mysqli_report(MYSQLI_REPORT_OFF);
 $conn = new mysqli('127.0.0.1', 'root', '{escaped}', 'cyberlab');
 $message = '';
 if ($conn->connect_error) {{
-    // Conexão com o banco falhou de verdade (não é erro de sintaxe SQL,
-    // é o banco mesmo inacessível) — mostra isso claramente em vez de
-    // deixar o resto do script tentar usar uma conexão morta e quebrar
-    // com um erro ainda mais confuso.
     $message = "Erro de conexão com o banco de dados. Tente novamente em instantes.";
 }} elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {{
     $user = $_POST['username'] ?? '';
@@ -100,19 +135,7 @@ if ($conn->connect_error) {{
     // Vulnerável de propósito: concatenação direta sem sanitização (SQLi).
     $sql = "SELECT * FROM users WHERE username='$user' AND password='$pass'";
     $result = $conn->query($sql);
-    if ($result && $result->num_rows > 0) {{
-        $row = $result->fetch_assoc();
-        $message = "Login bem-sucedido! Bem-vindo, " . htmlspecialchars($row['username']) . ".";
-        if ($row['username'] === 'admin') {{
-            $message .= "<br>Flag: " . htmlspecialchars($row['flag'] ?? '');
-        }}
-    }} else {{
-        $message = "Usuário ou senha inválidos.";
-        if ($conn->error) {{
-            $message .= "<br><small>Erro SQL: " . htmlspecialchars($conn->error) . "</small>";
-        }}
-    }}
-}}
+{response_logic}}}
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -143,10 +166,8 @@ button{{width:100%;padding:8px;background:#4f7cff;color:#fff;border:none;border-
 
 
 def build_sqli_pre_app_commands(db_password: str) -> list[str]:
-    """Comandos que rodam ANTES de injetar os arquivos: instala e
-    configura Apache + PHP + MySQL, cria o banco e o usuário remoto.
-    -o Acquire::Retries=3 protege contra soluços de rede transitórios
-    durante o download de pacotes."""
+    """Infraestrutura idêntica independente da dificuldade — só o PHP
+    entregue muda. -o Acquire::Retries=3 protege contra soluços de rede."""
     return [
         "apt-get update",
         "apt-get install -y -o Acquire::Retries=3 apache2 libapache2-mod-php php-mysql mysql-server",
@@ -168,32 +189,19 @@ def build_sqli_pre_app_commands(db_password: str) -> list[str]:
 def build_sqli_post_app_commands(
     admin_password: str, flag_value: str, flag_location: str, webadmin_password: str, root_flag_value: str
 ) -> list[str]:
-    """
-    Depois dos arquivos já colocados: semeia o banco, sobe o Apache, e
-    monta a FASE 2 (escalonamento de privilégio):
-      - usuário Linux 'webadmin' com SSH, senha = a MESMA senha do
-        usuário admin do banco (reuso de senha — erro clássico e
-        realista que a exploração da fase 1 revela)
-      - sudoers mal configurado: NOPASSWD em /usr/bin/find, um vetor de
-        escalonamento clássico (GTFOBins)
-      - segunda flag em /root/, só legível depois do escalonamento
-    """
+    """Fase 2: SSH com senha reutilizada + sudoers mal configurado
+    (NOPASSWD em /usr/bin/find, GTFOBins). Igual em todas as dificuldades
+    — a dificuldade afeta só a fase 1 (o PHP)."""
     return [
         f"mysql cyberlab -e \"INSERT INTO users (username, password, flag) "
         f"VALUES ('admin', '{admin_password}', '{flag_value}');\"",
         f"echo '{flag_value}' > {flag_location}",
-        # O Apache prioriza index.html sobre index.php por padrão — sem
-        # remover o index.html de fábrica do pacote, nossa landing page
-        # (index.php) nunca aparece, e o site continua mostrando a
-        # página "It works!" genérica do Ubuntu.
         "rm -f /var/www/html/index.html",
         "service apache2 start",
-        # --- fase 2: acesso SSH com a senha reutilizada ---
         "apt-get install -y -o Acquire::Retries=3 openssh-server sudo",
         "useradd -m -s /bin/bash webadmin",
         f"echo 'webadmin:{webadmin_password}' | chpasswd",
         "service ssh start",
-        # --- fase 2: sudoers mal configurado (vetor de privesc) ---
         "echo 'webadmin ALL=(ALL) NOPASSWD: /usr/bin/find' > /etc/sudoers.d/cyberlab",
         "chmod 440 /etc/sudoers.d/cyberlab",
         f"echo '{root_flag_value}' > /root/root_flag.txt",
@@ -203,9 +211,7 @@ def build_sqli_post_app_commands(
 
 # ============================================================
 # SQLi — variante 2: busca de produtos (uma fase só, sem privesc)
-# Padrão diferente de propósito: injeção via parâmetro GET (URL), não
-# formulário de login. Mais simples, mais rápida, e também mais
-# confiável (não mexe com SSH/sudo — menos peças pra falhar).
+# Injeção via parâmetro GET (URL), não formulário de login.
 # ============================================================
 
 def build_search_landing_php(company_name: str = "InventoryTrack") -> str:
@@ -235,14 +241,46 @@ nav a{{color:#9fd3ff;margin-right:1.5rem;text-decoration:none}}
 """
 
 
-def build_search_php(db_password: str) -> str:
+def build_search_php(db_password: str, difficulty: str = "easy") -> str:
     """
-    Busca de produtos vulnerável a SQLi refletida via parâmetro GET —
-    um dos padrões mais comuns de SQLi no mundo real (caixas de busca,
-    filtros de catálogo). Sem login, sem sessão — a exploração é direto
-    na URL.
+    Busca de produtos vulnerável a SQLi via parâmetro GET.
+      - easy:   mostra erro SQL, resultados visíveis
+      - medium: sem erro SQL, resultados ainda visíveis (UNION funciona)
+      - hard:   só diz "encontrado(s)"/"nenhum resultado" — oráculo
+                booleano puro, nunca mostra dado
     """
     escaped = db_password.replace("\\", "\\\\").replace("'", "\\'")
+
+    if difficulty == "hard":
+        query_logic = """    $sql = "SELECT name, description FROM products WHERE name LIKE '%$search%'";
+    $result = $conn->query($sql);
+    if ($result && $result->num_rows > 0) {
+        $error = "Resultado(s) encontrado(s).";
+    } else {
+        $error = "Nenhum resultado encontrado.";
+    }
+"""
+    elif difficulty == "medium":
+        query_logic = """    $sql = "SELECT name, description FROM products WHERE name LIKE '%$search%'";
+    $result = $conn->query($sql);
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $results[] = $row;
+        }
+    }
+"""
+    else:
+        query_logic = """    $sql = "SELECT name, description FROM products WHERE name LIKE '%$search%'";
+    $result = $conn->query($sql);
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $results[] = $row;
+        }
+    } else {
+        $error = "Erro SQL: " . htmlspecialchars($conn->error);
+    }
+"""
+
     return f"""<?php
 mysqli_report(MYSQLI_REPORT_OFF);
 $conn = new mysqli('127.0.0.1', 'root', '{escaped}', 'cyberlab');
@@ -254,16 +292,7 @@ if ($conn->connect_error) {{
 }} elseif ($search !== '') {{
     // Vulnerável de propósito: concatenação direta em query GET (SQLi
     // refletida via URL, sem sanitização nenhuma).
-    $sql = "SELECT name, description FROM products WHERE name LIKE '%$search%'";
-    $result = $conn->query($sql);
-    if ($result) {{
-        while ($row = $result->fetch_assoc()) {{
-            $results[] = $row;
-        }}
-    }} else {{
-        $error = "Erro SQL: " . htmlspecialchars($conn->error);
-    }}
-}}
+{query_logic}}}
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -303,8 +332,6 @@ td,th{{border:1px solid #444;padding:8px;text-align:left}}
 
 
 def build_search_pre_app_commands(db_password: str) -> list[str]:
-    """Mesma base MySQL+Apache das outras variantes de SQLi, mas sem
-    nenhuma etapa de SSH/sudo — o cenário é de uma fase só."""
     return [
         "apt-get update",
         "apt-get install -y -o Acquire::Retries=3 apache2 libapache2-mod-php php-mysql mysql-server",
@@ -336,24 +363,46 @@ def build_search_post_app_commands(flag_value: str, flag_location: str) -> list[
 
 
 # ============================================================
-# Command Injection — ferramenta de diagnóstico de rede
+# Command Injection — variante 1: ferramenta de diagnóstico de rede
 # ============================================================
 
-def build_command_injection_php() -> str:
+def build_command_injection_php(difficulty: str = "easy") -> str:
     """
-    Ferramenta de "diagnóstico de rede" — pede um host e roda `ping`
-    nele. Vulnerável de propósito: o input do usuário vai direto pro
-    shell_exec sem nenhuma sanitização.
+    Ferramenta de "diagnóstico de rede" — roda `ping` no host informado.
+      - easy:   saída completa sempre visível
+      - medium: nenhuma saída visível — só dá pra confirmar via TEMPO
+                de resposta (injeta `; sleep 5` e mede o delay)
+      - hard:   execução em segundo plano (assíncrona) — a resposta
+                HTTP volta sempre rápido, então nem tempo serve de
+                sinal. Só resta exfiltração FORA DE BANDA (o alvo manda
+                dado de volta pro atacante via /dev/tcp).
     """
-    return """<?php
-$output = '';
-$host = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $host = $_POST['host'] ?? '';
-    // Vulnerável de propósito: shell_exec com entrada do usuário sem
+    if difficulty == "hard":
+        exec_logic = """    // Executa em segundo plano (detached) — a resposta HTTP volta
+    // sempre rápido, independente do que o comando injetado faça.
+    // Isso invalida tanto leitura direta de saída quanto blind por
+    // tempo — só sobra exfiltração fora de banda (OOB).
+    exec('ping -c 2 ' . $host . ' > /dev/null 2>&1 &');
+    $output = "Ping enviado em segundo plano.";
+"""
+    elif difficulty == "medium":
+        exec_logic = """    // Saída nunca é mostrada — só o comando roda de verdade (mesmo
+    // processo, então o tempo de execução ainda é observável).
+    shell_exec('ping -c 2 ' . $host . ' > /dev/null 2>&1');
+    $output = "Ping enviado.";
+"""
+    else:
+        exec_logic = """    // Vulnerável de propósito: shell_exec com entrada do usuário sem
     // sanitização nenhuma (Command Injection / OS Command Injection).
     $output = shell_exec('ping -c 2 ' . $host . ' 2>&1');
-}
+"""
+
+    return f"""<?php
+$output = '';
+$host = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {{
+    $host = $_POST['host'] ?? '';
+{exec_logic}}}
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -361,11 +410,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <meta charset="UTF-8">
 <title>CyberLab - Diagnóstico de Rede</title>
 <style>
-body{font-family:sans-serif;background:#111;color:#eee;padding:2rem}
-.box{max-width:600px;margin:0 auto;background:#1c1c1c;padding:2rem;border-radius:8px}
-input{width:100%;padding:8px;margin:6px 0;border-radius:4px;border:1px solid #444;background:#222;color:#eee;box-sizing:border-box}
-button{padding:8px 16px;background:#4f7cff;color:#fff;border:none;border-radius:4px;cursor:pointer}
-pre{background:#000;padding:1rem;overflow-x:auto;white-space:pre-wrap;border-radius:4px;margin-top:1rem}
+body{{font-family:sans-serif;background:#111;color:#eee;padding:2rem}}
+.box{{max-width:600px;margin:0 auto;background:#1c1c1c;padding:2rem;border-radius:8px}}
+input{{width:100%;padding:8px;margin:6px 0;border-radius:4px;border:1px solid #444;background:#222;color:#eee;box-sizing:border-box}}
+button{{padding:8px 16px;background:#4f7cff;color:#fff;border:none;border-radius:4px;cursor:pointer}}
+pre{{background:#000;padding:1rem;overflow-x:auto;white-space:pre-wrap;border-radius:4px;margin-top:1rem}}
 </style>
 </head>
 <body>
@@ -395,17 +444,8 @@ def build_command_injection_pre_app_commands() -> list[str]:
 def build_command_injection_post_app_commands(
     flag_value: str, flag_location: str, root_flag_value: str
 ) -> list[str]:
-    """
-    Flag em /opt (não /root!) — o PHP roda como www-data, e /root tem
-    permissão 700, então nem um comando injetado alcançaria um arquivo
-    lá dentro. /opt é world-readable por padrão.
-
-    Fase 2: diferente do SQLi (SSH + reuso de senha), aqui a porta de
-    entrada é a PRÓPRIA injeção de comando — www-data já tem execução
-    de código, só falta escalar. Vetor: sudoers mal configurado,
-    NOPASSWD em /usr/bin/awk (GTFOBins), explorável via reverse shell
-    aberta pela mesma injeção.
-    """
+    """Flag em /opt (não /root!) — /root tem permissão 700. Fase 2:
+    sudoers mal configurado, NOPASSWD em /usr/bin/awk (GTFOBins)."""
     return [
         "rm -f /var/www/html/index.html",
         f"mkdir -p $(dirname {flag_location}) && echo '{flag_value}' > {flag_location}",
@@ -420,28 +460,38 @@ def build_command_injection_post_app_commands(
 
 
 # ============================================================
-# Command Injection — variante 2: visualizador de logs
-# Injeção via parâmetro GET (URL), não formulário POST. Fase 2 usa um
-# mecanismo DIFERENTE da variante 1: bit SUID mal configurado num
-# binário (não sudoers), descoberto via enumeração de SUID
-# (find / -perm -4000) em vez de sudo -l — técnica de reconhecimento
-# genuinamente distinta.
+# Command Injection — variante 2: visualizador de logs (GET)
+# Fase 2 usa SUID em vez de sudoers — mecanismo diferente da variante 1.
 # ============================================================
 
-def build_log_viewer_php() -> str:
+def build_log_viewer_php(difficulty: str = "easy") -> str:
     """
-    Visualizador de logs — pede um nome de arquivo e mostra o conteúdo.
-    Vulnerável de propósito: o nome do arquivo vai direto pro comando de
-    sistema via parâmetro GET (URL), sem sanitização nenhuma.
+    Visualizador de logs — mesmo espectro de dificuldade da variante 1
+    (saída visível → blind por tempo → assíncrono/OOB), mas via
+    parâmetro GET em vez de formulário POST.
     """
-    return """<?php
-$output = '';
-$logfile = $_GET['logfile'] ?? '';
-if ($logfile !== '') {
-    // Vulnerável de propósito: nome de arquivo vai direto pro comando
+    if difficulty == "hard":
+        exec_logic = """    // Execução assíncrona — resposta sempre rápida, força exfiltração
+    // fora de banda.
+    exec('cat /var/log/app/' . $logfile . ' > /dev/null 2>&1 &');
+    $output = "Consulta de log enfileirada.";
+"""
+    elif difficulty == "medium":
+        exec_logic = """    // Saída nunca mostrada — só o tempo de execução é observável.
+    shell_exec('cat /var/log/app/' . $logfile . ' > /dev/null 2>&1');
+    $output = "Log consultado.";
+"""
+    else:
+        exec_logic = """    // Vulnerável de propósito: nome de arquivo vai direto pro comando
     // de sistema, sem sanitização (Command Injection via parâmetro GET).
     $output = shell_exec('cat /var/log/app/' . $logfile . ' 2>&1');
-}
+"""
+
+    return f"""<?php
+$output = '';
+$logfile = $_GET['logfile'] ?? '';
+if ($logfile !== '') {{
+{exec_logic}}}
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -449,11 +499,11 @@ if ($logfile !== '') {
 <meta charset="UTF-8">
 <title>CyberLab - Visualizador de Logs</title>
 <style>
-body{font-family:sans-serif;background:#111;color:#eee;padding:2rem}
-.box{max-width:600px;margin:0 auto;background:#1c1c1c;padding:2rem;border-radius:8px}
-input{width:100%;padding:8px;margin:6px 0;border-radius:4px;border:1px solid #444;background:#222;color:#eee;box-sizing:border-box}
-button{padding:8px 16px;background:#4f7cff;color:#fff;border:none;border-radius:4px;cursor:pointer}
-pre{background:#000;padding:1rem;overflow-x:auto;white-space:pre-wrap;border-radius:4px;margin-top:1rem}
+body{{font-family:sans-serif;background:#111;color:#eee;padding:2rem}}
+.box{{max-width:600px;margin:0 auto;background:#1c1c1c;padding:2rem;border-radius:8px}}
+input{{width:100%;padding:8px;margin:6px 0;border-radius:4px;border:1px solid #444;background:#222;color:#eee;box-sizing:border-box}}
+button{{padding:8px 16px;background:#4f7cff;color:#fff;border:none;border-radius:4px;cursor:pointer}}
+pre{{background:#000;padding:1rem;overflow-x:auto;white-space:pre-wrap;border-radius:4px;margin-top:1rem}}
 </style>
 </head>
 <body>
@@ -483,12 +533,8 @@ def build_log_viewer_pre_app_commands() -> list[str]:
 def build_log_viewer_post_app_commands(
     flag_value: str, flag_location: str, root_flag_value: str
 ) -> list[str]:
-    """
-    Fase 2 diferente de propósito: SUID no lugar de sudoers. Sem pacote
-    'sudo' nem sudoers.d nenhum — o vetor aqui é o bit SUID direto no
-    binário /usr/bin/find, um erro de configuração clássico e real,
-    explorável via `find ... -exec` (GTFOBins, entrada SUID).
-    """
+    """Fase 2: bit SUID em /usr/bin/find (não sudoers) — mecanismo
+    diferente da variante 1, descoberto via enumeração de SUID."""
     return [
         "mkdir -p /var/log/app",
         "echo '192.168.1.10 - - [10/Aug/2026] GET /index.php 200' > /var/log/app/access.log",

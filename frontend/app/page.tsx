@@ -20,6 +20,14 @@ const PROMPT_SUGGESTIONS: { category: string; variants: { label: string; text: s
         text: "máquina Linux com SQLi na tela de login, flag em /root/flag.txt",
       },
       {
+        label: "Login — iniciante (erro SQL visível)",
+        text: "SQLi na tela de login, algo fácil pra quem tá aprendendo",
+      },
+      {
+        label: "Login — avançado (blind, sem retorno)",
+        text: "SQLi avançado na tela de login, cego, sem retorno direto de dados",
+      },
+      {
         label: "Busca de produtos (simples, 1 fase)",
         text: "sistema de busca de produtos vulnerável a SQL Injection, algo simples e rápido",
       },
@@ -31,6 +39,10 @@ const PROMPT_SUGGESTIONS: { category: string; variants: { label: string; text: s
       {
         label: "Diagnóstico de rede",
         text: "ferramenta de diagnóstico de rede vulnerável a injeção de comandos",
+      },
+      {
+        label: "Diagnóstico de rede — avançado (cego, OOB)",
+        text: "ferramenta de diagnóstico de rede vulnerável a comandos, avançado, execução cega",
       },
       {
         label: "Visualizador de logs (via URL)",
