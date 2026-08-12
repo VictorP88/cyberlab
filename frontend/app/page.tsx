@@ -9,8 +9,8 @@ import { apiFetch, clearToken, getToken } from "./apiClient";
 
 const TerminalView = dynamic(() => import("./TerminalView"), { ssr: false });
 
-// Agrupado por tipo de vulnerabilidade — escala bem conforme mais tipos
-// e mais variantes forem entrando (cada grupo vira um <optgroup>).
+// Só a variante técnica aqui — dificuldade é escolhida à parte, num
+// controle separado, pra não misturar dois eixos numa lista só.
 const PROMPT_SUGGESTIONS: { category: string; variants: { label: string; text: string }[] }[] = [
   {
     category: "SQL Injection",
@@ -20,16 +20,8 @@ const PROMPT_SUGGESTIONS: { category: string; variants: { label: string; text: s
         text: "máquina Linux com SQLi na tela de login, flag em /root/flag.txt",
       },
       {
-        label: "Login — iniciante (erro SQL visível)",
-        text: "SQLi na tela de login, algo fácil pra quem tá aprendendo",
-      },
-      {
-        label: "Login — avançado (blind, sem retorno)",
-        text: "SQLi avançado na tela de login, cego, sem retorno direto de dados",
-      },
-      {
         label: "Busca de produtos (simples, 1 fase)",
-        text: "sistema de busca de produtos vulnerável a SQL Injection, algo simples e rápido",
+        text: "sistema de busca de produtos vulnerável a SQL Injection",
       },
     ],
   },
@@ -41,15 +33,17 @@ const PROMPT_SUGGESTIONS: { category: string; variants: { label: string; text: s
         text: "ferramenta de diagnóstico de rede vulnerável a injeção de comandos",
       },
       {
-        label: "Diagnóstico de rede — avançado (cego, OOB)",
-        text: "ferramenta de diagnóstico de rede vulnerável a comandos, avançado, execução cega",
-      },
-      {
         label: "Visualizador de logs (via URL)",
         text: "visualizador de logs vulnerável a injeção de comandos via parâmetro na URL",
       },
     ],
   },
+];
+
+const DIFFICULTY_OPTIONS = [
+  { value: "easy", label: "Fácil", phrase: "nível de dificuldade: fácil, com pistas visíveis" },
+  { value: "medium", label: "Médio", phrase: "nível de dificuldade: médio, sem pistas óbvias" },
+  { value: "hard", label: "Difícil", phrase: "nível de dificuldade: avançado, exploração cega/blind" },
 ];
 
 interface ScenarioSpec {
@@ -90,6 +84,7 @@ export default function Home() {
   const [description, setDescription] = useState(
     "máquina Linux com SQLi na tela de login, flag em /root/flag.txt"
   );
+  const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard">("medium");
   const [loading, setLoading] = useState(false);
   const [spawnResult, setSpawnResult] = useState<SpawnAccepted | null>(null);
   const [job, setJob] = useState<JobStatus | null>(null);
@@ -159,10 +154,13 @@ export default function Home() {
     setJustUnlockedRoot(false);
 
     try {
+      const difficultyPhrase = DIFFICULTY_OPTIONS.find((d) => d.value === difficulty)?.phrase ?? "";
+      const finalDescription = description.trim() + " (" + difficultyPhrase + ")";
+
       const res = await apiFetch("/scenarios/generate-and-spawn", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description }),
+        body: JSON.stringify({ description: finalDescription }),
       });
 
       if (!res.ok) {
@@ -324,6 +322,29 @@ export default function Home() {
             </optgroup>
           ))}
         </select>
+      </div>
+
+      <div style={{ marginTop: "0.8rem" }}>
+        <label style={{ display: "block", marginBottom: "0.4rem", fontSize: "0.8rem", color: "var(--text-dim)" }}>
+          Dificuldade:
+        </label>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          {DIFFICULTY_OPTIONS.map((d) => (
+            <button
+              key={d.value}
+              type="button"
+              onClick={() => setDifficulty(d.value as "easy" | "medium" | "hard")}
+              style={{
+                marginTop: 0,
+                flex: 1,
+                background: difficulty === d.value ? "var(--primary)" : "var(--bg-raised)",
+                color: difficulty === d.value ? "var(--outline)" : "var(--text)",
+              }}
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <br />
