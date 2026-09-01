@@ -28,3 +28,5 @@ Thumbs.db
 
 # Dados locais (volumes montados, se algum ficar solto na árvore)
 *.sqlite3
+cuca/.env
+*.ovpn
